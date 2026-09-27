@@ -9,7 +9,7 @@ Description:    Creates Dimension and Fact tables for the Northwind Sales Data M
                 Architecture:
                 - Target Database : dds
                 - Target Schema   : sale
-                - Model           : Star Schema
+                - Model           : SnowFlake Schema
                 - Fact Grain      : One row per Order ID + Product ID
 
                 Dimensional Design:
@@ -62,8 +62,37 @@ BEGIN
 END;
 GO
 
+
 -----------------------------------------------------------------------------------------
--- 3. Create Customer Dimension
+-- 3. Create Geography Dimension
+--
+-- Geography is integrated from Customers, Employees, Suppliers,
+-- and the shipping address of Orders.
+-----------------------------------------------------------------------------------------
+IF OBJECT_ID(N'sale.dim_geography', N'U') IS NULL
+BEGIN
+    CREATE TABLE sale.dim_geography
+    (
+        geography_key       INT IDENTITY(1,1) NOT NULL,
+        country             NVARCHAR(100)     NOT NULL,
+        region              NVARCHAR(100)     NOT NULL,
+        city                NVARCHAR(100)     NOT NULL,
+        postal_code         NVARCHAR(30)      NOT NULL,
+        dwh_inserted_at     DATETIME2(3)      NOT NULL
+        CONSTRAINT df_dim_geography_dwh_inserted_at
+        DEFAULT (SYSUTCDATETIME()),
+
+        CONSTRAINT pk_dim_geography PRIMARY KEY (geography_key),
+
+        CONSTRAINT uq_dim_geography_location
+        UNIQUE (country, region, city, postal_code)
+    );
+END;
+GO
+
+
+-----------------------------------------------------------------------------------------
+-- 4. Create Customer Dimension
 -----------------------------------------------------------------------------------------
 IF OBJECT_ID(N'sale.dim_customer', N'U') IS NULL
 BEGIN
@@ -71,29 +100,36 @@ BEGIN
     (
         customer_key        INT IDENTITY(1,1) NOT NULL,
         customer_id         VARCHAR(20)       NOT NULL,
-        geography_key       INT               NOT NULL,
         company_name        NVARCHAR(255)     NOT NULL,
         contact_name        NVARCHAR(255)     NOT NULL,
         contact_title       NVARCHAR(100)     NOT NULL,
         phone               NVARCHAR(50)      NOT NULL,
         fax                 NVARCHAR(50)      NOT NULL,
+		geography_key           INT               NULL,
         dwh_inserted_at     DATETIME2(3)      NOT NULL
-            CONSTRAINT df_dim_customer_dwh_inserted_at
-            DEFAULT (SYSUTCDATETIME()),
+        CONSTRAINT df_dim_customer_dwh_inserted_at
+        DEFAULT (SYSUTCDATETIME()),
 
         CONSTRAINT pk_dim_customer PRIMARY KEY (customer_key),
-        CONSTRAINT uq_dim_customer_customer_id UNIQUE (customer_id)
-        --IMPORTANT:
-        -- If this dimension contains historical attributes (e.g. SCD Type 2),
-        -- the business key (customer_id) can appear in multiple rows to preserve history.
-        -- Therefore, do NOT create a UNIQUE constraint on customer_id in that case.
-        -- The surrogate key (customer_key) remains the primary key.
+        CONSTRAINT uq_dim_customer_customer_id UNIQUE (customer_id),
+
+    	 /*IMPORTANT:
+         If this dimension contains historical attributes (e.g. SCD Type 2),
+         the business key (customer_id) can appear in multiple rows to preserve history.
+         Therefore, do NOT create a UNIQUE constraint on customer_id in that case.
+         The surrogate key (customer_key) remains the primary key.
+         */
+
+		 CONSTRAINT fk_dim_customer_geography
+         FOREIGN KEY (geography_key)
+         REFERENCES sale.dim_geography(geography_key)
     );
 END;
 GO
 
+
 -----------------------------------------------------------------------------------------
--- 4. Create Employee Dimension
+-- 5. Create Employee Dimension
 -----------------------------------------------------------------------------------------
 IF OBJECT_ID(N'sale.dim_employee', N'U') IS NULL
 BEGIN
@@ -101,7 +137,6 @@ BEGIN
     (
         employee_key            INT IDENTITY(1,1) NOT NULL,
         employee_id             INT               NOT NULL,
-        geography_key           INT               NOT NULL,
         first_name              NVARCHAR(100)     NOT NULL,
         last_name               NVARCHAR(100)     NOT NULL,
         full_name               NVARCHAR(250)     NOT NULL,
@@ -110,18 +145,24 @@ BEGIN
         birth_date              DATE              NULL,
         hire_date               DATE              NULL,
         reports_to_employee_id  INT               NULL,
+		geography_key           INT               NULL,
         dwh_inserted_at         DATETIME2(3)      NOT NULL
-            CONSTRAINT df_dim_employee_dwh_inserted_at
-            DEFAULT (SYSUTCDATETIME()),
+        CONSTRAINT df_dim_employee_dwh_inserted_at
+        DEFAULT (SYSUTCDATETIME()),
 
         CONSTRAINT pk_dim_employee PRIMARY KEY (employee_key),
-        CONSTRAINT uq_dim_employee_employee_id UNIQUE (employee_id)
+        CONSTRAINT uq_dim_employee_employee_id UNIQUE (employee_id),
+		CONSTRAINT fk_dim_employee_geography
+        FOREIGN KEY (geography_key)
+        REFERENCES sale.dim_geography(geography_key)
     );
+    
 END;
 GO
 
+
 -----------------------------------------------------------------------------------------
--- 5. Create Supplier Dimension
+-- 6. Create Supplier Dimension
 -----------------------------------------------------------------------------------------
 IF OBJECT_ID(N'sale.dim_supplier', N'U') IS NULL
 BEGIN
@@ -129,24 +170,28 @@ BEGIN
     (
         supplier_key        INT IDENTITY(1,1) NOT NULL,
         supplier_id         INT               NOT NULL,
-        geography_key       INT               NOT NULL,
         company_name        NVARCHAR(255)     NOT NULL,
         contact_name        NVARCHAR(255)     NOT NULL,
         contact_title       NVARCHAR(100)     NOT NULL,
         phone               NVARCHAR(50)      NOT NULL,
         home_page           NVARCHAR(MAX)     NOT NULL,
+		geography_key           INT               NULL,
         dwh_inserted_at     DATETIME2(3)      NOT NULL
-            CONSTRAINT df_dim_supplier_dwh_inserted_at
-            DEFAULT (SYSUTCDATETIME()),
+        CONSTRAINT df_dim_supplier_dwh_inserted_at
+        DEFAULT (SYSUTCDATETIME()),
 
         CONSTRAINT pk_dim_supplier PRIMARY KEY (supplier_key),
-        CONSTRAINT uq_dim_supplier_supplier_id UNIQUE (supplier_id)
+        CONSTRAINT uq_dim_supplier_supplier_id UNIQUE (supplier_id),
+		CONSTRAINT fk_dim_supplier_geography
+        FOREIGN KEY (geography_key)
+        REFERENCES sale.dim_geography(geography_key)
     );
 END;
 GO
 
+
 -----------------------------------------------------------------------------------------
--- 6. Create Product Dimension
+-- 7. Create Product Dimension
 --
 -- Category is denormalized in this Dimension.
 -- There is intentionally no independent dim_category table.
@@ -161,6 +206,7 @@ BEGIN
 
         -- Supplier Business Key retained for lineage and analytical use.
         supplier_id             INT               NULL,
+		 supplier_key            INT               NULL,
 
         -- Denormalized Category Attributes
         category_id             INT               NULL,
@@ -171,6 +217,7 @@ BEGIN
         quantity_per_unit       NVARCHAR(100)     NOT NULL,
         package_quantity        INT               NULL,
         package_unit            NVARCHAR(100)     NOT NULL,
+		--2 taye akhari ro khodemon ezafe kardim
 
         -- Product Inventory / Status Attributes
         current_unit_price      DECIMAL(19,4)     NOT NULL,
@@ -184,13 +231,18 @@ BEGIN
             DEFAULT (SYSUTCDATETIME()),
 
         CONSTRAINT pk_dim_product PRIMARY KEY (product_key),
-        CONSTRAINT uq_dim_product_product_id UNIQUE (product_id)
+        CONSTRAINT uq_dim_product_product_id UNIQUE (product_id),
+
+		CONSTRAINT fk_dim_product_supplier
+		FOREIGN KEY (supplier_key)
+        REFERENCES sale.dim_supplier(supplier_key)
     );
 END;
 GO
 
+
 -----------------------------------------------------------------------------------------
--- 7. Create Shipper Dimension
+-- 8. Create Shipper Dimension
 -----------------------------------------------------------------------------------------
 IF OBJECT_ID(N'sale.dim_shipper', N'U') IS NULL
 BEGIN
@@ -210,32 +262,6 @@ BEGIN
 END;
 GO
 
------------------------------------------------------------------------------------------
--- 8. Create Geography Dimension
---
--- Geography is integrated from Customers, Employees, Suppliers,
--- and the shipping address of Orders.
------------------------------------------------------------------------------------------
-IF OBJECT_ID(N'sale.dim_geography', N'U') IS NULL
-BEGIN
-    CREATE TABLE sale.dim_geography
-    (
-        geography_key       INT IDENTITY(1,1) NOT NULL,
-        country             NVARCHAR(100)     NOT NULL,
-        region              NVARCHAR(100)     NOT NULL,
-        city                NVARCHAR(100)     NOT NULL,
-        postal_code         NVARCHAR(30)      NOT NULL,
-        dwh_inserted_at     DATETIME2(3)      NOT NULL
-            CONSTRAINT df_dim_geography_dwh_inserted_at
-            DEFAULT (SYSUTCDATETIME()),
-
-        CONSTRAINT pk_dim_geography PRIMARY KEY (geography_key),
-
-        CONSTRAINT uq_dim_geography_location
-            UNIQUE (country, region, city, postal_code)
-    );
-END;
-GO
 
 -----------------------------------------------------------------------------------------
 -- 9. Create Order Fact
@@ -250,18 +276,20 @@ BEGIN
     CREATE TABLE sale.fact_order
     (
         order_fact_key          BIGINT IDENTITY(1,1) NOT NULL,
+		--pk mishe khodam neveshtam
 
         -- Business / Degenerate Keys
         order_id                INT                   NOT NULL,
         source_product_id       INT                   NOT NULL,
+		--bk mishe ,jadval order va order detail (khode order detail har radifesh shamel product+orderid)
 
         -- Dimension Surrogate Keys
         customer_key            INT                   NOT NULL,
         employee_key            INT                   NOT NULL,
-        supplier_key            INT                   NOT NULL,
+       
         product_key             INT                   NOT NULL,
         shipper_key             INT                   NOT NULL,
-        
+     
 
         /*
             Date keys originate from the shared DimDate table:
@@ -284,6 +312,7 @@ BEGIN
         discount_amount         DECIMAL(19,4)         NOT NULL,
         net_amount              DECIMAL(19,4)         NOT NULL,
         freight_amount          DECIMAL(19,4)         NOT NULL,
+		--khodemon ezafe kardim
 
         dwh_inserted_at         DATETIME2(3)          NOT NULL
             CONSTRAINT df_fact_order_dwh_inserted_at
@@ -303,9 +332,7 @@ BEGIN
             FOREIGN KEY (employee_key)
             REFERENCES sale.dim_employee(employee_key),
 
-        CONSTRAINT fk_fact_order_supplier
-            FOREIGN KEY (supplier_key)
-            REFERENCES sale.dim_supplier(supplier_key),
+     
 
         CONSTRAINT fk_fact_order_product
             FOREIGN KEY (product_key)
@@ -313,14 +340,14 @@ BEGIN
 
         CONSTRAINT fk_fact_order_shipper
             FOREIGN KEY (shipper_key)
-            REFERENCES sale.dim_shipper(shipper_key),
+            REFERENCES sale.dim_shipper(shipper_key)
 
-        CONSTRAINT fk_fact_order_geography
-            FOREIGN KEY (geography_key)
-            REFERENCES sale.dim_geography(geography_key)
+        
     );
 END;
 GO
+
+
 -----------------------------------------------------------------------------------------
 -- 10. Insert Unknown Members
 --
@@ -431,6 +458,7 @@ BEGIN
         product_id,
         product_name,
         supplier_id,
+		supplier_key,
         category_id,
         category_name,
         category_desc,
@@ -449,6 +477,7 @@ BEGIN
         0,
         N'Unknown Product',
         NULL,
+		0,
         NULL,
         N'Unknown Category',
         N'Not Available',
